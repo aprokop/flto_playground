@@ -1,6 +1,6 @@
 #!/bin/bash
 
-for i in flto_none flto_wrap_cxx flto_wrap_f90 flto_wrap_f90_cxx flto_wrap_f90_cxx_cc flto_wrap_f90_f90_cxx flto_all; do
+for i in flto_none flto_wrap_f90_cxx flto_wrap_f90_f90_cxx; do
     echo $i;
     ./$i
 done
