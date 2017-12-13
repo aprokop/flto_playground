@@ -1,0 +1,11 @@
+#!/bin/bash
+
+./flto_none
+echo
+./flto_wrap_cxx
+echo
+./flto_wrap_f90
+echo
+./flto_wrap_f90_cxx
+echo
+./flto_all
