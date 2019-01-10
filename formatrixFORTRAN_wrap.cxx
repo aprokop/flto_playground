@@ -97,6 +97,15 @@ template <typename T> T SwigValueInit() {
 # define SWIGINTERNINLINE SWIGINTERN SWIGINLINE
 #endif
 
+/* qualifier for exported *const* global data variables*/
+#ifndef SWIGEXTERN
+# ifdef __cplusplus
+#   define SWIGEXTERN extern
+# else
+#   define SWIGEXTERN
+# endif
+#endif
+
 /* exporting methods */
 #if defined(__GNUC__)
 #  if (__GNUC__ >= 4) || (__GNUC__ == 3 && __GNUC_MINOR__ >= 4)
@@ -155,15 +164,6 @@ template <typename T> T SwigValueInit() {
 # pragma warning disable 592
 #endif
 
-
-#ifndef SWIGEXTERN
-#ifdef __cplusplus
-#define SWIGEXTERN extern
-#else
-#define SWIGEXTERN
-#endif
-#endif
-
 /*  Errors in SWIG */
 #define  SWIG_UnknownError    	   -1
 #define  SWIG_IOError        	   -2
@@ -182,14 +182,39 @@ template <typename T> T SwigValueInit() {
 
 
 
-// Default exception handler
-#define SWIG_exception_impl(CODE, MSG, NULLRETURN) \
-    throw std::logic_error(MSG); return NULLRETURN;
+#define SWIG_exception_impl(DECL, CODE, MSG, RETURNNULL) \
+ { throw std::logic_error("In " DECL ": " MSG); }
 
 
-/* Contract support */
-#define SWIG_contract_assert(NULLRETURN, EXPR, MSG) \
-    if (!(EXPR)) { SWIG_exception_impl(SWIG_ValueError, MSG, NULLRETURN); }
+namespace swig {
+
+enum AssignmentFlags {
+  IS_DESTR       = 0x01,
+  IS_COPY_CONSTR = 0x02,
+  IS_COPY_ASSIGN = 0x04,
+  IS_MOVE_CONSTR = 0x08,
+  IS_MOVE_ASSIGN = 0x10
+};
+
+template<class T, int Flags>
+struct assignment_flags;
+}
+
+
+#define SWIG_assign(LEFTTYPE, LEFT, RIGHTTYPE, RIGHT, FLAGS) \
+    SWIG_assign_impl<LEFTTYPE , RIGHTTYPE, swig::assignment_flags<LEFTTYPE, FLAGS >::value >(LEFT, RIGHT);
+
+
+#include <stdexcept>
+
+
+/* Support for the `contract` feature.
+ *
+ * Note that RETURNNULL is first because it's inserted via a 'Replaceall' in
+ * the fortran.cxx file.
+ */
+#define SWIG_contract_assert(RETURNNULL, EXPR, MSG) \
+ if (!(EXPR)) { SWIG_exception_impl("$decl", SWIG_ValueError, MSG, RETURNNULL); }
 
 
 #define SWIGVERSION 0x040000
@@ -200,9 +225,6 @@ template <typename T> T SwigValueInit() {
 #define SWIG_as_voidptrptr(a) ((void)SWIG_as_voidptr(*a),reinterpret_cast< void** >(a))
 
 
-#include <stdexcept>
-
-
 #include "matrix.hh"
 
 
@@ -210,190 +232,477 @@ template <typename T> T SwigValueInit() {
 
 
 namespace swig {
-template<class T>
-struct SwigfArrayWrapper
-{
-    T* data;
-    std::size_t size;
+template<class T, class U, int Flags>
+struct assignment_flags<std::pair<const T, U>, Flags> {
+  enum { value = IS_DESTR | IS_COPY_CONSTR };
 };
+template<class T, class U, int Flags>
+struct assignment_flags<std::pair<T, const U>, Flags> {
+  enum { value = IS_DESTR | IS_COPY_CONSTR };
+};
+}
+
+
+enum SwigMemState {
+    SWIG_NULL = 0,
+    SWIG_OWN,
+    SWIG_MOVE,
+    SWIG_REF,
+    SWIG_CREF
+};
+
+
+struct SwigClassWrapper {
+    void* cptr;
+    SwigMemState mem;
+};
+
+
+SWIGINTERN SwigClassWrapper SwigClassWrapper_uninitialized() {
+    SwigClassWrapper result;
+    result.cptr = NULL;
+    result.mem = SWIG_NULL;
+    return result;
+}
+
+
+#include <stdlib.h>
+#ifdef _MSC_VER
+# ifndef strtoull
+#  define strtoull _strtoui64
+# endif
+# ifndef strtoll
+#  define strtoll _strtoi64
+# endif
+#endif
+
+
+struct SwigArrayWrapper {
+    void* data;
+    size_t size;
+};
+
+
+SWIGINTERN SwigArrayWrapper SwigArrayWrapper_uninitialized() {
+  SwigArrayWrapper result;
+  result.data = NULL;
+  result.size = 0;
+  return result;
+}
+
+
+namespace swig {
+
+// Define our own switching struct to support pre-c++11 builds
+template<bool Val>
+struct bool_constant {};
+typedef bool_constant<true>  true_type;
+typedef bool_constant<false> false_type;
+
+// Deletion
+template<class T>
+SWIGINTERN void destruct_impl(T* self, true_type) {
+  delete self;
+}
+template<class T>
+SWIGINTERN T* destruct_impl(T* , false_type) {
+  SWIG_exception_impl("assignment", SWIG_TypeError,
+                      "Invalid assignment: class type has no destructor",
+                      return NULL);
+}
+
+// Copy construction and assignment
+template<class T, class U>
+SWIGINTERN T* copy_construct_impl(const U* other, true_type) {
+  return new T(*other);
+}
+template<class T, class U>
+SWIGINTERN void copy_assign_impl(T* self, const U* other, true_type) {
+  *self = *other;
+}
+
+// Disabled construction and assignment
+template<class T, class U>
+SWIGINTERN T* copy_construct_impl(const U* , false_type) {
+  SWIG_exception_impl("assignment", SWIG_TypeError,
+                      "Invalid assignment: class type has no copy constructor",
+                      return NULL);
+}
+template<class T, class U>
+SWIGINTERN void copy_assign_impl(T* , const U* , false_type) {
+  SWIG_exception_impl("assignment", SWIG_TypeError,
+                      "Invalid assignment: class type has no copy assignment",
+                      return);
+}
+
+#if __cplusplus >= 201103L
+#include <utility>
+#include <type_traits>
+
+// Move construction and assignment
+template<class T, class U>
+SWIGINTERN T* move_construct_impl(U* other, true_type) {
+  return new T(std::move(*other));
+}
+template<class T, class U>
+SWIGINTERN void move_assign_impl(T* self, U* other, true_type) {
+  *self = std::move(*other);
+}
+
+// Disabled move construction and assignment
+template<class T, class U>
+SWIGINTERN T* move_construct_impl(U*, false_type) {
+  SWIG_exception_impl("assignment", SWIG_TypeError,
+                      "Invalid assignment: class type has no move constructor",
+                      return NULL);
+}
+template<class T, class U>
+SWIGINTERN void move_assign_impl(T*, U*, false_type) {
+  SWIG_exception_impl("assignment", SWIG_TypeError,
+                      "Invalid assignment: class type has no move assignment",
+                      return);
+}
+
+template<class T, int Flags>
+struct assignment_flags {
+  constexpr static int value =
+             (std::is_destructible<T>::value       ? IS_DESTR       : 0)
+           | (std::is_copy_constructible<T>::value ? IS_COPY_CONSTR : 0)
+           | (std::is_copy_assignable<T>::value    ? IS_COPY_ASSIGN : 0)
+           | (std::is_move_constructible<T>::value ? IS_MOVE_CONSTR : 0)
+           | (std::is_move_assignable<T>::value    ? IS_MOVE_ASSIGN : 0);
+};
+
+#else
+
+template<class T, int Flags>
+struct assignment_flags {
+  enum { value = Flags };
+};
+
+#endif
+
+template<class T, int Flags>
+struct AssignmentTraits {
+  static void destruct(T* self) {
+    destruct_impl<T>(self, bool_constant<Flags & IS_DESTR>());
+  }
+
+  template<class U>
+  static T* copy_construct(const U* other) {
+    return copy_construct_impl<T,U>(other, bool_constant<bool(Flags & IS_COPY_CONSTR)>());
+  }
+
+  template<class U>
+  static void copy_assign(T* self, const U* other) {
+    copy_assign_impl<T,U>(self, other, bool_constant<bool(Flags & IS_COPY_ASSIGN)>());
+  }
+
+#if __cplusplus >= 201103L
+  template<class U>
+  static T* move_construct(U* other) {
+    return move_construct_impl<T,U>(other, bool_constant<bool(Flags & IS_MOVE_CONSTR)>());
+  }
+  template<class U>
+  static void move_assign(T* self, U* other) {
+    move_assign_impl<T,U>(self, other, bool_constant<bool(Flags & IS_MOVE_ASSIGN)>());
+  }
+#else
+  template<class U>
+  static T* move_construct(U* other) {
+    return copy_construct_impl<T,U>(other, bool_constant<bool(Flags & IS_COPY_CONSTR)>());
+  }
+  template<class U>
+  static void move_assign(T* self, U* other) {
+    copy_assign_impl<T,U>(self, other, bool_constant<bool(Flags & IS_COPY_ASSIGN)>());
+  }
+#endif
+};
+
+} // end namespace swig
+
+
+template<class T1, class T2, int AFlags>
+SWIGINTERN void SWIG_assign_impl(SwigClassWrapper* self, SwigClassWrapper* other) {
+  typedef swig::AssignmentTraits<T1, AFlags> Traits_t;
+  T1* pself  = static_cast<T1*>(self->cptr);
+  T2* pother = static_cast<T2*>(other->cptr);
+
+  switch (self->mem) {
+    case SWIG_NULL:
+      /* LHS is unassigned */
+      switch (other->mem) {
+        case SWIG_NULL: /* null op */ break;
+        case SWIG_MOVE: /* capture pointer from RHS */
+          self->cptr = other->cptr;
+          other->cptr = NULL;
+          self->mem = SWIG_OWN;
+          other->mem = SWIG_NULL;
+          break;
+        case SWIG_OWN: /* copy from RHS */
+          self->cptr = Traits_t::copy_construct(pother);
+          self->mem = SWIG_OWN;
+          break;
+        case SWIG_REF: /* pointer to RHS */
+        case SWIG_CREF:
+          self->cptr = other->cptr;
+          self->mem = other->mem;
+          break;
+      }
+      break;
+    case SWIG_OWN:
+      /* LHS owns memory */
+      switch (other->mem) {
+        case SWIG_NULL:
+          /* Delete LHS */
+          Traits_t::destruct(pself);
+          self->cptr = NULL;
+          self->mem = SWIG_NULL;
+          break;
+        case SWIG_MOVE:
+          /* Move RHS into LHS; delete RHS */
+          Traits_t::move_assign(pself, pother);
+          Traits_t::destruct(pother);
+          other->cptr = NULL;
+          other->mem = SWIG_NULL;
+          break;
+        case SWIG_OWN:
+        case SWIG_REF:
+        case SWIG_CREF:
+          /* Copy RHS to LHS */
+          Traits_t::copy_assign(pself, pother);
+          break;
+      }
+      break;
+    case SWIG_MOVE:
+      SWIG_exception_impl("assignment", SWIG_RuntimeError,
+        "Left-hand side of assignment should never be in a 'MOVE' state",
+        return);
+      break;
+    case SWIG_REF:
+      /* LHS is a reference */
+      switch (other->mem) {
+        case SWIG_NULL:
+          /* Remove LHS reference */
+          self->cptr = NULL;
+          self->mem = SWIG_NULL;
+          break;
+        case SWIG_MOVE:
+          /* Move RHS into LHS; delete RHS. The original ownership stays the
+           * same. */
+          Traits_t::move_assign(pself, pother);
+          Traits_t::destruct(pother);
+          other->cptr = NULL;
+          other->mem = SWIG_NULL;
+          break;
+        case SWIG_OWN:
+        case SWIG_REF:
+        case SWIG_CREF:
+          /* Copy RHS to LHS */
+          Traits_t::copy_assign(pself, pother);
+          break;
+      }
+      break;
+    case SWIG_CREF:
+      switch (other->mem) {
+        case SWIG_NULL:
+          /* Remove LHS reference */
+          self->cptr = NULL;
+          self->mem = SWIG_NULL;
+        default:
+          SWIG_exception_impl("assignment", SWIG_RuntimeError,
+              "Cannot assign to a const reference", return);
+          break;
+      }
+      break;
+  }
 }
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-SWIGEXPORT void * swigc_new_Matrix(int const *farg1, int const *farg2) {
-  void * fresult ;
+SWIGEXPORT SwigClassWrapper _wrap_new_Matrix(int const *farg1, int const *farg2) {
+  SwigClassWrapper fresult ;
   int arg1 ;
   int arg2 ;
   Matrix *result = 0 ;
 
-  arg1 = *farg1;
-  arg2 = *farg2;
+  arg1 = static_cast< int >(*farg1);
+  arg2 = static_cast< int >(*farg2);
   result = (Matrix *)new Matrix(arg1,arg2);
-  fresult = result;
+  fresult.cptr = result;
+  fresult.mem = (1 ? SWIG_MOVE : SWIG_REF);
   return fresult;
 }
 
 
-SWIGEXPORT int swigc_Matrix_num_rows(void const *farg1) {
+SWIGEXPORT int _wrap_Matrix_num_rows(SwigClassWrapper const *farg1) {
   int fresult ;
   Matrix *arg1 = (Matrix *) 0 ;
   int result;
 
-  arg1 = static_cast< Matrix * >(const_cast< void* >(farg1));
+  arg1 = static_cast< Matrix * >(farg1->cptr);
   result = (int)((Matrix const *)arg1)->num_rows();
-  fresult = result;
+  fresult = static_cast< int >(result);
   return fresult;
 }
 
 
-SWIGEXPORT int swigc_Matrix_num_nnz(void const *farg1) {
+SWIGEXPORT int _wrap_Matrix_num_nnz(SwigClassWrapper const *farg1) {
   int fresult ;
   Matrix *arg1 = (Matrix *) 0 ;
   int result;
 
-  arg1 = static_cast< Matrix * >(const_cast< void* >(farg1));
+  arg1 = static_cast< Matrix * >(farg1->cptr);
   result = (int)((Matrix const *)arg1)->num_nnz();
-  fresult = result;
+  fresult = static_cast< int >(result);
   return fresult;
 }
 
 
-SWIGEXPORT int swigc_Matrix_row_nnz(void const *farg1, int const *farg2) {
+SWIGEXPORT int _wrap_Matrix_row_nnz(SwigClassWrapper const *farg1, int const *farg2) {
   int fresult ;
   Matrix *arg1 = (Matrix *) 0 ;
   int arg2 ;
   int result;
 
-  arg1 = static_cast< Matrix * >(const_cast< void* >(farg1));
-  arg2 = *farg2;
+  arg1 = static_cast< Matrix * >(farg1->cptr);
+  arg2 = static_cast< int >(*farg2);
   result = (int)((Matrix const *)arg1)->row_nnz(arg2);
-  fresult = result;
+  fresult = static_cast< int >(result);
   return fresult;
 }
 
 
-SWIGEXPORT int swigc_Matrix_get_column(void const *farg1, int const *farg2, int const *farg3) {
+SWIGEXPORT int _wrap_Matrix_get_column(SwigClassWrapper const *farg1, int const *farg2, int const *farg3) {
   int fresult ;
   Matrix *arg1 = (Matrix *) 0 ;
   int arg2 ;
   int arg3 ;
   int result;
 
-  arg1 = static_cast< Matrix * >(const_cast< void* >(farg1));
-  arg2 = *farg2;
-  arg3 = *farg3;
+  arg1 = static_cast< Matrix * >(farg1->cptr);
+  arg2 = static_cast< int >(*farg2);
+  arg3 = static_cast< int >(*farg3);
   result = (int)((Matrix const *)arg1)->get_column(arg2,arg3);
-  fresult = result;
+  fresult = static_cast< int >(result);
   return fresult;
 }
 
 
-SWIGEXPORT double swigc_Matrix_get_value(void const *farg1, int const *farg2, int const *farg3) {
+SWIGEXPORT double _wrap_Matrix_get_value(SwigClassWrapper const *farg1, int const *farg2, int const *farg3) {
   double fresult ;
   Matrix *arg1 = (Matrix *) 0 ;
   int arg2 ;
   int arg3 ;
   double result;
 
-  arg1 = static_cast< Matrix * >(const_cast< void* >(farg1));
-  arg2 = *farg2;
-  arg3 = *farg3;
+  arg1 = static_cast< Matrix * >(farg1->cptr);
+  arg2 = static_cast< int >(*farg2);
+  arg3 = static_cast< int >(*farg3);
   result = (double)((Matrix const *)arg1)->get_value(arg2,arg3);
-  fresult = result;
+  fresult = static_cast< double >(result);
   return fresult;
 }
 
 
-SWIGEXPORT swig::SwigfArrayWrapper< int const > swigc_Matrix_get_columns(void const *farg1, int const *farg2) {
-  swig::SwigfArrayWrapper< int const > fresult ;
+SWIGEXPORT SwigArrayWrapper _wrap_Matrix_get_columns(SwigClassWrapper const *farg1, int const *farg2) {
+  SwigArrayWrapper fresult ;
   Matrix *arg1 = (Matrix *) 0 ;
   int arg2 ;
   Matrix::const_int_view result;
 
-  arg1 = static_cast< Matrix * >(const_cast< void* >(farg1));
-  arg2 = *farg2;
+  arg1 = static_cast< Matrix * >(farg1->cptr);
+  arg2 = static_cast< int >(*farg2);
   result = ((Matrix const *)arg1)->get_columns(arg2);
-  fresult.data = (&result)->first;
+  fresult.data = const_cast<int*>((&result)->first);
   fresult.size = (&result)->second;
   return fresult;
 }
 
 
-SWIGEXPORT swig::SwigfArrayWrapper< double const > swigc_Matrix_get_values__SWIG_0(void const *farg1, int const *farg2) {
-  swig::SwigfArrayWrapper< double const > fresult ;
+SWIGEXPORT SwigArrayWrapper _wrap_Matrix_get_values__SWIG_0(SwigClassWrapper const *farg1, int const *farg2) {
+  SwigArrayWrapper fresult ;
   Matrix *arg1 = (Matrix *) 0 ;
   int arg2 ;
   Matrix::const_dbl_view result;
 
-  arg1 = static_cast< Matrix * >(const_cast< void* >(farg1));
-  arg2 = *farg2;
+  arg1 = static_cast< Matrix * >(farg1->cptr);
+  arg2 = static_cast< int >(*farg2);
   result = ((Matrix const *)arg1)->get_values(arg2);
-  fresult.data = (&result)->first;
+  fresult.data = const_cast<double*>((&result)->first);
   fresult.size = (&result)->second;
   return fresult;
 }
 
 
-SWIGEXPORT int * swigc_Matrix_get_columns_ptr(void const *farg1, int const *farg2) {
-  int * fresult ;
+SWIGEXPORT int const * _wrap_Matrix_get_columns_ptr(SwigClassWrapper const *farg1, int const *farg2) {
+  int const * fresult ;
   Matrix *arg1 = (Matrix *) 0 ;
   int arg2 ;
   int *result = 0 ;
 
-  arg1 = static_cast< Matrix * >(const_cast< void* >(farg1));
-  arg2 = *farg2;
+  arg1 = static_cast< Matrix * >(farg1->cptr);
+  arg2 = static_cast< int >(*farg2);
   result = (int *)((Matrix const *)arg1)->get_columns_ptr(arg2);
-  fresult = const_cast< int* >(reinterpret_cast< const int* >(result));
+  fresult = const_cast< int * >(result);
   return fresult;
 }
 
 
-SWIGEXPORT swig::SwigfArrayWrapper< int const > swigc_Matrix_get_row_ptrs(void const *farg1) {
-  swig::SwigfArrayWrapper< int const > fresult ;
+SWIGEXPORT SwigArrayWrapper _wrap_Matrix_get_row_ptrs(SwigClassWrapper const *farg1) {
+  SwigArrayWrapper fresult ;
   Matrix *arg1 = (Matrix *) 0 ;
   Matrix::const_int_view result;
 
-  arg1 = static_cast< Matrix * >(const_cast< void* >(farg1));
+  arg1 = static_cast< Matrix * >(farg1->cptr);
   result = ((Matrix const *)arg1)->get_row_ptrs();
-  fresult.data = (&result)->first;
+  fresult.data = const_cast<int*>((&result)->first);
   fresult.size = (&result)->second;
   return fresult;
 }
 
 
-SWIGEXPORT swig::SwigfArrayWrapper< int const > swigc_Matrix_get_col_inds(void const *farg1) {
-  swig::SwigfArrayWrapper< int const > fresult ;
+SWIGEXPORT SwigArrayWrapper _wrap_Matrix_get_col_inds(SwigClassWrapper const *farg1) {
+  SwigArrayWrapper fresult ;
   Matrix *arg1 = (Matrix *) 0 ;
   Matrix::const_int_view result;
 
-  arg1 = static_cast< Matrix * >(const_cast< void* >(farg1));
+  arg1 = static_cast< Matrix * >(farg1->cptr);
   result = ((Matrix const *)arg1)->get_col_inds();
-  fresult.data = (&result)->first;
+  fresult.data = const_cast<int*>((&result)->first);
   fresult.size = (&result)->second;
   return fresult;
 }
 
 
-SWIGEXPORT swig::SwigfArrayWrapper< double const > swigc_Matrix_get_values__SWIG_1(void const *farg1) {
-  swig::SwigfArrayWrapper< double const > fresult ;
+SWIGEXPORT SwigArrayWrapper _wrap_Matrix_get_values__SWIG_1(SwigClassWrapper const *farg1) {
+  SwigArrayWrapper fresult ;
   Matrix *arg1 = (Matrix *) 0 ;
   Matrix::const_dbl_view result;
 
-  arg1 = static_cast< Matrix * >(const_cast< void* >(farg1));
+  arg1 = static_cast< Matrix * >(farg1->cptr);
   result = ((Matrix const *)arg1)->get_values();
-  fresult.data = (&result)->first;
+  fresult.data = const_cast<double*>((&result)->first);
   fresult.size = (&result)->second;
   return fresult;
 }
 
 
-SWIGEXPORT void swigc_delete_Matrix(void *farg1) {
+SWIGEXPORT void _wrap_delete_Matrix(SwigClassWrapper const *farg1) {
   Matrix *arg1 = (Matrix *) 0 ;
 
-  arg1 = static_cast< Matrix * >(farg1);
+  arg1 = static_cast< Matrix * >(farg1->cptr);
   delete arg1;
 
+}
+
+
+SWIGEXPORT void _wrap_assign_Matrix(SwigClassWrapper * self, SwigClassWrapper const * other) {
+  typedef ::Matrix swig_lhs_classtype;
+  SWIG_assign(swig_lhs_classtype, self,
+    swig_lhs_classtype, const_cast<SwigClassWrapper*>(other),
+    0 | swig::IS_DESTR | swig::IS_COPY_CONSTR);
 }
 
 
