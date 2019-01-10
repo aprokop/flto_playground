@@ -18,3 +18,8 @@ flto_wrap_f90_f90_cxx: *.f90 *.cc *.cxx
 	gfortran 	-c -O3 -flto	formatrix.f90
 	gfortran 	-c -O3 -flto	perf_formatrix.f90
 	g++ -o $@ 	   -O3 -flto 	perf_formatrix.o formatrix.o timerlib.o formatrixFORTRAN_wrap.o matrix.o -lgfortran
+
+clean:
+	rm -f *.o
+	rm -f *.mod
+	rm -f flto_none flto_wrap_f90_cxx flto_wrap_f90_f90_cxx
