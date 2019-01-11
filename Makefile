@@ -1,7 +1,10 @@
+.NOTPARALLEL:
+
 all: flto_none flto_wrap_f90_cxx flto_wrap_f90_f90_cxx
 
 flto_none: *.f90 *.cc *.cxx
-	g++ -o $@ -O3 perf_formatrix.f90 formatrix.f90 timerlib.f90 formatrixFORTRAN_wrap.cxx matrix.cc -lgfortran
+	gfortran 	-c -O3 			timerlib.f90
+	g++ -o $@      -O3 			perf_formatrix.f90 formatrix.f90 timerlib.o formatrixFORTRAN_wrap.cxx matrix.cc -lgfortran
 
 flto_wrap_f90_cxx: *.f90 *.cc *.cxx
 	g++ 		-c -O3 			matrix.cc
