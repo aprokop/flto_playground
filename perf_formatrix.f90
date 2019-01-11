@@ -25,10 +25,10 @@ subroutine perf_formatrix()
 
     call t%create()
 
-    nx = 400
-    ny = 400
-    num_repeats = 300
-    num_outer_repeats = 1
+    nx = 3000
+    ny = 3000
+    num_repeats = 10
+    num_outer_repeats = 2
 
     n = nx*ny
 
@@ -49,7 +49,7 @@ subroutine perf_formatrix()
         end do
     end do
     call t%stop()
-    write(0, '(A, F10.3)') "Loop (fine)  :", t%walltime()
+    write(0, '(A, F10.3)') "Loop (fine)  :", t%walltime()/num_repeats
 
     ! Medium grained (using raw pointer return and 2 swig calls)
     call t%reset()
@@ -65,7 +65,7 @@ subroutine perf_formatrix()
         end do
     end do
     call t%stop()
-    write(0, '(A, F10.3)') "Loop (medium 2xfortran):", t%walltime()
+    write(0, '(A, F10.3)') "Loop (medium 2xfortran):", t%walltime()/num_repeats
 
     ! Medium grained
     call t%reset()
@@ -81,7 +81,7 @@ subroutine perf_formatrix()
         end do
     end do
     call t%stop()
-    write(0, '(A, F10.3)') "Loop (medium):", t%walltime()
+    write(0, '(A, F10.3)') "Loop (medium):", t%walltime()/num_repeats
 
     ! Coarse grained
     call t%reset()
@@ -98,7 +98,7 @@ subroutine perf_formatrix()
         end do
     end do
     call t%stop()
-    write(0, '(A, F10.3)') "Loop (coarse):", t%walltime()
+    write(0, '(A, F10.3)') "Loop (coarse):", t%walltime()/num_repeats
  enddo
     call A%release()
 end subroutine
